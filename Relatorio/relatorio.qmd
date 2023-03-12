@@ -1,0 +1,705 @@
+---
+title: Análise em Dados do E-commerce da Olist
+author: Juan Victor Carballo Blanco
+subtitle: Desafio UFRJ Analyica
+date: 03/12/2023
+date-format: DD/MM/YYYY
+format:
+  pdf:
+    toc: true
+    number-sections: true
+    colorlinks: true
+output:
+  pdf_document:
+    df_print: kable
+    toc: true
+    toc_depth: 2
+toc-title: "Sumário"
+---
+
+\pagebreak
+
+# Introdução
+
+O trabalho em questão consiste em uma análise do conjunto de dados de e-commerce da [Olist](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce) disponibilizado pelo kaggle. As informações foram criadas entre os anos de 2016 e 2018 consistindo de 8 arquivos de formato "csv" que possuem os nomes:
+
+- olist_customers_dataset
+- olist_geolocation_dataset
+- olist_order_items_dataset
+- olist_order_payments_dataset
+- olist_order_reviews_dataset
+- olist_orders_dataset
+- olist_orders_dataset
+- olist_sellers_dataset
+
+Todos esses datasets estão interligados através de chaves primárias ou estrangeiros de acordo com a imagem abaixo:
+
+![Relacionamento do Conjunto de Dados](DataSchema.png)
+
+O objetivo desse projeto é entender quem são os clientes de Olist e por fim realizar um trabalho de segmentação de clientes.
+
+```{python}
+#| echo: false
+
+import pandas as pd
+from warnings import filterwarnings
+
+filterwarnings('ignore')
+
+def import_data():
+    #  Importando os dados
+    dataframes_dict = {
+        "Customers": pd.read_csv("../Dados/olist_customers_dataset.csv"),
+        "Geolocation": pd.read_csv("../Dados/olist_geolocation_dataset.csv"),
+        "Order_Items": pd.read_csv("../Dados/olist_order_items_dataset.csv"),
+        "Order_Payments": pd.read_csv("../Dados/olist_order_payments_dataset.csv"),
+        "Order_Reviews": pd.read_csv("../Dados/olist_order_reviews_dataset.csv"),
+        "Orders": pd.read_csv("../Dados/olist_orders_dataset.csv"),
+        "Products": pd.read_csv("../Dados/olist_products_dataset.csv"),
+        "Sellers": pd.read_csv("../Dados/olist_sellers_dataset.csv"),
+    }
+
+    #  Fazendo o tratamento do conjunto de dados dos Consumidores
+    dataframes_dict["Customers"] = dataframes_dict["Customers"].assign(
+        customer_state=dataframes_dict["Customers"].customer_state.astype("category")
+    )
+
+    #  Fazendo o tratamento do conjunto de dados dos Pedidos de Clientes
+    dataframes_dict["Order_Items"] = dataframes_dict["Order_Items"].assign(
+        shipping_limit_date=pd.to_datetime(
+            dataframes_dict["Order_Items"]["shipping_limit_date"],
+            format="%Y-%m-%d %H:%M:%S",
+        ),
+        total_cost=dataframes_dict["Order_Items"].price
+        + dataframes_dict["Order_Items"].freight_value,
+    )
+
+    #  Fazendo o tratamento do conjunto de dados dos Tipo de Pagamentos dos Pedidos
+    dataframes_dict["Order_Payments"] = dataframes_dict["Order_Payments"].assign(
+        payment_type=dataframes_dict["Order_Payments"].payment_type.astype("category")
+    )
+
+    #  Fazendo o tratamento do conjunto de dados dos Comentários dos Pedidos
+    dataframes_dict["Order_Reviews"] = dataframes_dict["Order_Reviews"].assign(
+        review_creation_date=pd.to_datetime(
+            dataframes_dict["Order_Reviews"]["review_creation_date"],
+            format="%Y-%m-%d %H:%M:%S",
+        ),
+        review_answer_timestamp=pd.to_datetime(
+            dataframes_dict["Order_Reviews"]["review_answer_timestamp"],
+            format="%Y-%m-%d %H:%M:%S",
+        ),
+        reviews_reponse_time=lambda x: x.review_answer_timestamp
+        - x.review_creation_date,
+    )
+
+    #  Fazendo o tratamento do conjunto de dados dos Pedidos
+    dataframes_dict["Orders"] = (
+        dataframes_dict["Orders"]
+        .assign(
+            order_purchase_timestamp=pd.to_datetime(
+                dataframes_dict["Orders"]["order_purchase_timestamp"],
+                format="%Y-%m-%d %H:%M:%S",
+            ),
+            order_approved_at=pd.to_datetime(
+                dataframes_dict["Orders"]["order_approved_at"],
+                format="%Y-%m-%d %H:%M:%S",
+            ),
+            order_delivered_carrier_date=pd.to_datetime(
+                dataframes_dict["Orders"]["order_delivered_carrier_date"],
+                format="%Y-%m-%d %H:%M:%S",
+            ),
+            order_delivered_customer_date=pd.to_datetime(
+                dataframes_dict["Orders"]["order_delivered_customer_date"],
+                format="%Y-%m-%d %H:%M:%S",
+            ),
+            order_estimated_delivery_date=pd.to_datetime(
+                dataframes_dict["Orders"]["order_estimated_delivery_date"],
+                format="%Y-%m-%d %H:%M:%S",
+            ),
+            order_status=dataframes_dict["Orders"].order_status.astype("category"),
+            order_purchase_to_approved_time=lambda x: x.order_approved_at
+            - x.order_purchase_timestamp,
+            order_observed_delivery_time=lambda x: x.order_delivered_customer_date
+            - x.order_purchase_timestamp,
+        )[
+            [
+                "order_id",
+                "customer_id",
+                "order_status",
+                "order_purchase_timestamp",
+                "order_approved_at",
+                "order_purchase_to_approved_time",
+                "order_delivered_carrier_date",
+                "order_delivered_customer_date",
+                "order_observed_delivery_time",
+                "order_estimated_delivery_date",
+            ]
+        ]
+        .query(
+            "not(order_approved_at.isnull() and order_status != 'canceled') and not(order_delivered_carrier_date.isnull() and order_status in ('approved', 'delivered'))"
+        )
+    )
+
+    #  Fazendo o tratamento do conjunto de dados dos Vendedores
+    dataframes_dict["Sellers"] = dataframes_dict["Sellers"].assign(
+        seller_state=dataframes_dict["Sellers"].seller_state.astype("category")
+    )
+
+    return dataframes_dict
+
+
+```
+
+
+# Análise Exploratória de Dados
+
+## Compradores e Vendedores
+
+Analisando a distribuição espacial dos consumidores, podemos verificar que a demanda da Olist se concentra no sudeste, pricipalmente no estado de São Paulo. Isso provavelmente se deve a maior concentração populacional e economica nessa região que, desde a vinda da Familia Real em 1808, foi se consolidando como a região com maior progresso socio-economico do país. O mapa abaixo mostra essa concentração.
+
+```{python}
+#| echo: false
+#| fig-cap: "Distribuição de Clientes ao longo do Brasil"
+
+import geopandas as gpd
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn.objects as so
+
+
+data_dict = import_data()
+
+def plot_brazilian_maps(state_column_name: str, data: pd.DataFrame, brazil_map: gpd.GeoDataFrame = None, return_br_gpd: bool = False):
+    
+    if brazil_map is None:
+        brazil_map = gpd.read_file(
+            filename= "https://geoftp.ibge.gov.br/cartas_e_mapas/bases_cartograficas_continuas/bcim/versao2016/geopackage/bcim_2016_21_11_2018.gpkg",
+            layer = 'lim_unidade_federacao_a'
+        )
+    data = data[state_column_name].value_counts().reset_index(name='count')
+    
+    df = pd.merge(
+        left=brazil_map,
+        right=data,
+        left_on='sigla',
+        right_on='index',
+        how='left'
+    )
+    
+    if return_br_gpd:
+        return (
+            df.plot(column='count', cmap='OrRd', figsize=(20, 10), legend=True),
+            brazil_map
+        )
+    else:
+        return df.plot(column='count', cmap='OrRd', figsize=(20, 10), legend=True)
+
+plot_brazilian_maps(
+    state_column_name='customer_state',
+    data=data_dict['Customers']
+)
+
+plt.show()
+```
+
+\pagebreak
+
+Quando analisamos o aspecto da oferta, percebemos que as desigualdades regionais se amplificam, principalmente em São Paulo. Nesse aspecto, podemos ressaltar aspectos de escala principalmente no setor indústrial e logístico. No livro Economia Internacional de Paul Krugman no capítulo 7 é destacado como a produção tende a se concentrar em polos devido a ganhos relacionados a escala. A intuição por trás disso é que custos fixos industriais e logisticos, por exemplo, serão o mesmo valor independentemente se instalado em áreas grande dinamismo economico ou de baixo. Dessa forma, é muito mais eficiente e menos custoso a produção ser concentrado em um só lugar do que descentralizada em vários lugares diferentes. No caso em questão, uma empresa de e-commerce como a Olist consegue reduzir seus custos concentrando a produção em um lugar, já que se beneficiaria desse aumento de escala tanto vinda de si própria como de empresas na região.
+
+
+```{python}
+#| echo: false
+#| fig-cap: "Distribuição de Varejistas ao longo do Brasil"
+
+
+plot_brazilian_maps(
+    state_column_name='seller_state',
+    data=data_dict['Sellers']
+)
+plt.show()
+
+```
+
+O gráfico abaixo nos mostra novamente essa diferença entre consumidores e vendedores onde temos tanto na oferta quanto na demanda a proporção demandada/ofertada em relação ao volume total. Alguns poucos Estados (São Paulo, Paraná e Santa Catarina) possuem mais vendedores que consumidores. Podemos pensar que, nesse caso, esses estados estivessem "exportando" produtos enquanto os demais estivessem "importando".
+
+```{python}
+#| echo: false
+
+
+p = (
+    so.Plot(
+        data = pd.concat([
+            (
+                data_dict['Sellers']
+                .seller_state
+                .value_counts(normalize=True)
+                .reset_index()
+                .assign(Tipo = 'Vendedores')
+                .rename(columns={'index': 'Estado', 'seller_state': 'Porcentagem'})
+            ),
+            (
+                data_dict['Customers']
+                .customer_state
+                .value_counts(normalize=True)
+                .reset_index()
+                .assign(Tipo = 'Consumidores')
+                .rename(columns={'index': 'Estado', 'customer_state' : 'Porcentagem'})
+            )
+        ]).reset_index(drop=True),
+        x='Estado',
+        y='Porcentagem',
+        color='Tipo'
+        
+    )
+    .layout(size=(10, 8))
+    .add(so.Bar(), so.Dodge())
+)
+
+p.show()
+```
+
+## Produto
+
+Os produtos mais vendidos na Olist são produtos relacionados a vida de uma jovem familia brasileira. Infelizmente, não temos acesso a dados demográficos, porém, em vista dos 10 produtos mais vendidos, eu diria que o cliente médio são adultos de mais de 30 anos, pois grande parte desses produtos são relacionados a itens de casa.
+
+```{python}
+#| echo: false
+
+join_order_items_and_products = pd.merge(
+    right=data_dict['Order_Items'],
+    left=data_dict['Products'],
+    how='left',
+    on='product_id'
+)[[
+    'product_category_name',
+    'price',
+    'freight_value',
+    'total_cost'
+]]
+
+p = (
+    so.Plot(
+        data=(join_order_items_and_products.product_category_name.value_counts(normalize=True) * 100).head(10).reset_index(),
+        y = 'index',
+        x = 'product_category_name'
+    )
+    .add(so.Bar(), so.Dodge())
+    .layout(size=(15, 8))
+    .label(x='Porcentagem do Volume Total', y='Produtos')
+)
+
+p.show()
+
+```
+
+Ao analisar a nota dada por cada produto mais vendido, parece que não há nenhuma preferencia dos consumidores. A tabela abaixo mostra essa a nota média por cada produto 
+
+```{python}
+#| echo: false
+
+(
+    pd.merge(
+        right=data_dict['Order_Items'],
+        left=data_dict['Products'],
+        how='left',
+        on='product_id')
+    .merge(
+        right=(join_order_items_and_products.product_category_name.value_counts(normalize=True) * 100).head(10).reset_index(),
+        left_on='product_category_name',
+        right_on='index',
+    ).merge(
+        right=data_dict['Order_Reviews'],
+        on='order_id'
+    )
+    [[
+        'product_category_name_x',
+        'review_score'
+    ]]
+    .groupby(['product_category_name_x'])
+    .mean()
+    .reset_index()
+    .assign(review_score = lambda x: round(x.review_score, 2),
+            product_category_name_x = lambda x: x.product_category_name_x.str.replace("_", " "))
+    .rename(columns={
+        "product_category_name_x" : "Produto",
+        "review_score" : "Avaliação"
+    })
+)
+
+```
+
+Como podemos observar na tabela abaixo, há uma quantidade considerável de outliers no conjunto de dados em relação ao valor total pago. Uma pequena quantidade de consumidores gastaram alguns milhares de reais, enquanto a vasta maioria tem seu ticket médio por volta de 90 reais.
+
+```{python}
+#| echo: false
+
+join_order_items_and_products.total_cost.describe().to_frame().T[['mean', 'std', 'min', '25%', '50%', '75%', 'max']].rename(columns={"50%" : "Mediana", "mean" : 'Media', 'std' : 'Desvio Padrão', 'max' : 'Max', 'min' : 'Min'})
+
+```
+
+
+
+## Tipo de Pagamento
+
+O tipo de pagamento mais utilizado em compras é, com uma grande diferença, o cartão de crédito, provavelmente devido a sua habilidade de parcelar suas compras.
+
+```{python}
+#| echo: false
+
+p = (
+    so.Plot(
+        data = (data_dict['Order_Payments'].payment_type.value_counts(normalize=True) * 100).reset_index(),
+        x = 'index',
+        y = 'payment_type'
+    )
+    .add(so.Bar())
+    .layout(size=(15, 8))
+)
+
+p.show()
+
+
+```
+
+Apesar disso, cerca de 50% das vendas foram a vista e das que foram parceladas houve uma clara tendencia a um menor parcelamento possível. Esse fenomeno talvez seja devido ao baixo ticket médio do e-commerce, já que valores mais altos tendem a serem pagos em maiores parcelas. As tabelas abaixo mostram esses fenomenos.
+
+
+```{python}
+#| echo: false
+
+(data_dict['Order_Payments'].payment_installments.value_counts(normalize=True) * 100).reset_index().rename(columns={'index' : 'payment_installments', 'payment_installments' : 'Perc_total'}).assign(Perc_total = lambda x: round(x.Perc_total, 2)).head(10)
+
+```
+
+# Modelagem
+
+Meu objetivo é criar um modelo que crie cluster de clientes com base em suas características. Para tal, utilizarei o algoritmo K-Means para o agrupamento e o método Elbow para determinar o número de clusters. Para isso, eu utilizarei o conceito de RFM (Recency, Frequency, Monetary) para criar as features do modelo. 
+
+RFM é um modelo de análise de consumidores que utiliza três variáveis para classificar os clientes de acordo com seu comportamento de compra. A variável Recency (R) mede a o quão recente foi a compra dos clientes, a variável Frequency (F) mede a frequência de compra dos clientes e a variável Monetary (M) mede o valor total gasto pelos clientes. Com essas informações é possível melhorar a tomada de decisão de uma empresa. A tabela abaixo desse [site](https://www.putler.com/rfm-analysis/) nos mostra como sabendo o perfil do consumidor através dessa metodologia pode ajudar na tomada de decisão empresarial
+
+|Customer Segment | 	Activity | 	Actionable Tip|
+|--------------|-----------|------------|
+|Champions | 	Made recent purchases, frequent purchases, high spending | 	Offer loyalty rewards or exclusive promotions to maintain their loyalty and encourage them to make repeat purchases.|
+|Loyal Customers | 	Made frequent purchases, but not recently, high spending | 	Send them personalized offers or promotions based on their past purchases to encourage them to return and make another purchase.|
+|Potential Loyalists | 	Made recent purchases, but not frequent, high spending | 	Provide personalized recommendations for related products or services that they may be interested in based on their recent purchase.|
+|Recent Customers | 	Made recent purchases, but not frequent, low spending | 	Provide a discount or offer on their next purchase to encourage them to make another purchase and become a potential loyal customer.|
+|Promising Customers | 	Made frequent purchases, but not recently, low spending | 	Provide them with targeted offers or discounts on products or services they have shown interest in, to encourage them to return and make another purchase.|
+|At-Risk Customers | 	Made frequent purchases in the past, but not recently, low spending | 	Send them personalized offers or discounts to encourage them to make another purchase and re-engage with your brand.|
+|Lost Customers | 	No recent purchases, low frequency, low spending | 	Re-engage them by sending personalized emails or promotions to encourage them to return and make another purchase.|
+|Lost Cheap Customers | 	No recent purchases, low frequency, low spending | 	Offer them a discount or promotion to encourage them to return and make another purchase, but also consider whether it makes sense to focus on acquiring new customers instead.|
+
+Geralmente, as variáveis da análise por RFM são posta em uma escala de 1 a 5. Para esse trabalho, foi testado ambos os casos usando o algoritmo K-means. Uma forma de metrificar os clusters é calculando sua distorção que, dentro do contexto do K-means, calcula a diferença entre o centro dos clusters e cada ponto dos dados. Dessa forma, cada vez menor a distorção, mais representativo é o cluster. Evidentemente, a simples minimização da distorção sem limitações na quantidade de clusters nos levaria a uma situação que teriamos a mesma quantidade de observações que de clusters. Nesse contexto, utilizamos o "elbow method" para balancear o trade-off entre minimizar a distorção e minimizar a quantidade de clusters. Essa técnica consiste em calcular a variação da distorção a cada aumento marginal na quantidade de clusters. Quando a variação da distorção for muito pequena, isto é, quando a curva distorção vs quantidade de clusters ser quase plana que parece um cotovelo, seria a quantidade ideal de clusters.  
+
+Nos gráficos abaixo foi realizado essa técnica tanto quando os dados de RFM não está em escala de 1 a 5 e quando este está, respectivamente. A conclusão é de que o número ideal de clusters é 4 e que o conjunto de dados ideal para a realização da clusterização é o que teve sua escala de 1 a 5, de acordo com o valor de distorção. Os gráficos abaixo mostram essa perspectiva.
+
+```{python}
+#| echo: false
+
+
+from sklearn.cluster import KMeans
+from plotnine import *
+from yellowbrick.cluster.elbow import kelbow_visualizer
+
+
+
+
+data = (
+    pd.merge(
+        left=data_dict['Customers'],
+        right=data_dict['Orders'],
+        on='customer_id',
+        how='inner'
+    ).merge(
+        right=data_dict['Order_Payments'],
+        on='order_id',
+        how='inner'
+    )
+    [[
+        'customer_unique_id',
+        'order_purchase_timestamp',
+        'payment_value'
+    ]]
+)
+
+
+def create_rfm_dataframe(data: pd.DataFrame):
+    #  Nos metadados do dataset, a data final é 31/12/2018
+    last_dataset_day = pd.to_datetime('31/12/2018', format='%d/%m/%Y')
+    
+    df_monetary = (
+                    data
+                    [['customer_unique_id', 'payment_value']]
+                    .groupby('customer_unique_id')
+                    .sum()
+                    .rename(columns={'payment_value': 'Monetary'})
+                    .reset_index()
+                )
+    df_recency = (
+                    data
+                    [['customer_unique_id', 'order_purchase_timestamp']]
+                    .groupby('customer_unique_id')
+                    .max()
+                    .assign(order_purchase_timestamp=lambda x: (last_dataset_day - x.order_purchase_timestamp).dt.days)
+                    .rename(columns={'order_purchase_timestamp': 'Recency'})
+                    .reset_index()
+                )
+    df_frequency = (
+                    data
+                    [['customer_unique_id', 'order_purchase_timestamp']]
+                    .groupby('customer_unique_id')
+                    .count()
+                    .rename(columns={'order_purchase_timestamp': 'Frequency'})
+                    .reset_index()
+                )
+    
+    return pd.merge(
+        left=df_monetary,
+        right=df_recency,
+        on='customer_unique_id',
+    ).merge(
+        right=df_frequency,
+        on='customer_unique_id',
+    )
+    
+    
+rfm_df = create_rfm_dataframe(data)
+
+
+rfm_df = rfm_df.query('not(Monetary == 0)')
+
+
+def frequency_count(x):
+    if x <= 1:
+        return 1
+    elif x <= 3:
+        return 2
+    elif x <= 5:
+        return 3
+    elif x <= 8:
+        return 4
+    else:
+        return 5
+    
+
+rfm_df = rfm_df.assign(
+    Monetary_test = pd.qcut(rfm_df['Monetary'], 5, labels=[1, 2, 3, 4, 5]),
+    Recency_test = pd.qcut(rfm_df['Recency'], 5, labels=[5, 4, 3, 2, 1]),
+    Frequency_test = rfm_df['Frequency'].apply(frequency_count)
+)
+
+
+a = kelbow_visualizer(KMeans(), X= rfm_df[['Monetary', 'Recency', 'Frequency']], k=(1,20), show=False)
+
+```
+
+```{python}
+#| echo: false
+
+
+a = kelbow_visualizer(KMeans(), X=rfm_df[['Monetary_test', 'Recency_test', 'Frequency_test']].apply(lambda x: pd.to_numeric(x)), k=(1,20), show=False)
+
+```
+
+Após verificado quais melhores métricas e conjuntos de dados para realizar o agrupamento dos clientes, podemos classificar os clientes em 4 grupos:
+
+- Grupo 1: Clientes que gastaram muito dinheiro, mas que não compraram com frequência e que não compraram recentemente.
+- Grupo 2: Clientes que compraram pouco, não compraram recentemente e não compraram com frequência.
+- Grupo 3: Clientes que compraram recentemente, mas que não compraram com frequência e que gastaram uma quantia média de dinheiro.
+- Grupo 4: Clientes que compraram com frequência, compraram uma quantidade razoável de dinheiro e que compraram relativamente recentemente.
+
+
+
+```{python}
+#| echo: false
+import pandas as pd
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+from plotnine import *
+from yellowbrick.cluster.elbow import kelbow_visualizer
+
+data_dict = import_data()
+
+data = (
+    pd.merge(
+        left=data_dict['Customers'],
+        right=data_dict['Orders'],
+        on='customer_id',
+        how='inner'
+    ).merge(
+        right=data_dict['Order_Payments'],
+        on='order_id',
+        how='inner'
+    )
+    [[
+        'customer_unique_id',
+        'order_purchase_timestamp',
+        'payment_value'
+    ]]
+)
+
+def create_rfm_dataframe(data: pd.DataFrame):
+    #  Nos metadados do dataset, a data final é 31/12/2018
+    last_dataset_day = pd.to_datetime('31/12/2018', format='%d/%m/%Y')
+    
+    df_monetary = (
+                    data
+                    [['customer_unique_id', 'payment_value']]
+                    .groupby('customer_unique_id')
+                    .sum()
+                    .rename(columns={'payment_value': 'Monetary'})
+                    .reset_index()
+                )
+    df_recency = (
+                    data
+                    [['customer_unique_id', 'order_purchase_timestamp']]
+                    .groupby('customer_unique_id')
+                    .max()
+                    .assign(order_purchase_timestamp=lambda x: (last_dataset_day - x.order_purchase_timestamp).dt.days)
+                    .rename(columns={'order_purchase_timestamp': 'Recency'})
+                    .reset_index()
+                )
+    df_frequency = (
+                    data
+                    [['customer_unique_id', 'order_purchase_timestamp']]
+                    .groupby('customer_unique_id')
+                    .count()
+                    .rename(columns={'order_purchase_timestamp': 'Frequency'})
+                    .reset_index()
+                )
+    
+    return pd.merge(
+        left=df_monetary,
+        right=df_recency,
+        on='customer_unique_id',
+    ).merge(
+        right=df_frequency,
+        on='customer_unique_id',
+    )
+    
+    
+rfm_df = create_rfm_dataframe(data)
+
+
+
+rfm_df = rfm_df.query('not(Monetary == 0)')
+
+def frequency_count(x):
+    if x <= 1:
+        return 1
+    elif x <= 3:
+        return 2
+    elif x <= 5:
+        return 3
+    elif x <= 8:
+        return 4
+    else:
+        return 5
+rfm_df = rfm_df.assign(
+    Monetary_test = pd.qcut(rfm_df['Monetary'], 5, labels=[1, 2, 3, 4, 5]),
+    Recency_test = pd.qcut(rfm_df['Recency'], 5, labels=[5, 4, 3, 2, 1]),
+    Frequency_test = rfm_df['Frequency'].apply(frequency_count)
+)
+
+def train_kmeans(_df: pd.DataFrame, n_clusters: int, have_df_scaled: bool = False) -> tuple[KMeans, pd.DataFrame]:
+    scaler = StandardScaler()
+    df_scaled = scaler.fit_transform(_df)
+    model = KMeans(n_clusters=n_clusters, random_state=42, n_init='auto').fit(df_scaled)
+    if have_df_scaled:
+        column_name = scaler.get_feature_names_out()
+        _df = pd.DataFrame(df_scaled).assign(cluster=model.labels_).rename(columns={
+            0: column_name[0],
+            1: column_name[1],
+            2: column_name[2]
+        })
+    else:
+        _df = pd.DataFrame(_df).assign(cluster=model.labels_)
+    
+    
+    return model, _df
+def cluster_data_transformation(data: pd.DataFrame) -> pd.DataFrame:
+    return pd.melt(
+        frame = (data
+                .drop(columns=['Consumer_unique_id'])
+                .apply(lambda x: pd.to_numeric(x))
+                .groupby('cluster')
+                .agg({
+                    'Monetary_test' : 'mean',
+                    'Recency_test' : 'mean',
+                    'Frequency_test' : 'mean'
+                })
+                .reset_index()
+                .assign(Consumer_unique_id = data['Consumer_unique_id'])),
+        id_vars = ['cluster', 'Consumer_unique_id'],
+        var_name="type", 
+        value_name="value"
+    )
+
+modelo, dados_cluster = train_kmeans(rfm_df[['Monetary_test', 'Recency_test', 'Frequency_test']], 4, have_df_scaled = False)
+
+dados_cluster = dados_cluster.assign(Consumer_unique_id = rfm_df['customer_unique_id'], cluster = lambda x: x.cluster + 1)
+
+normal_cluster_data = cluster_data_transformation(dados_cluster)
+
+fig, plot = (
+    ggplot(data=normal_cluster_data) +
+    aes(x='cluster', y='value', fill='type') + 
+    geom_bar(stat='identity', position='dodge', alpha=0.8, color='black', size=0.2) +
+    labs(x='Clusters', y='Valores', title='Valor por Cluster', fill='Tipo') +
+    guides(fill=guide_legend(title='')) + 
+    scale_fill_manual(values=['#1f77b4', '#ff7f0e', '#2ca02c']) +
+    theme_bw() +
+    theme(plot_title=element_text(size=14, face='bold', margin={'b': 10}),
+       axis_title=element_text(size=12),
+       legend_position='bottom',
+       legend_title=element_text(size=10, face='bold'),
+       panel_grid_major=element_blank(),
+       panel_grid_minor=element_blank(),
+       panel_border=element_blank(),
+       axis_line=element_line(color='black'),
+       axis_ticks=element_line(color='black'),
+       legend_background=element_blank(),
+       legend_key=element_blank(),
+       figure_size=(8, 6)) +
+    ylim(0, 5)
+).draw(return_ggplot=True, show=True)
+
+fig.show()
+
+
+```
+
+Atualmente na empresa, como podemos observar no gráfico abaixo, o cluster mais significativo é o 3 e o menos significativo é o 4. Dessa forma, podemos concluir que a Olist conseguiu chamar a atenção de novos clientes que gastam uma boa quantidade de dinheiro, já que a única diferença entre o 3 e o 4 grupo é a frequencia. Dado esse contexto, em vista o paradigma RFM, é evidente que é o ideal para a marca é criar produtos que aumente fidelização de seus clientes como pacotes de assinatura e melhorar sistema de recomendação de produtos. 
+
+```{python}
+#| echo: false
+fig, plot = (
+    ggplot(data=(dados_cluster
+                .groupby('cluster')
+                .agg({'Consumer_unique_id' : 'count'})
+                .rename(columns={'Consumer_unique_id' : 'count'})
+                .reset_index()
+                .apply(lambda x: x if x.name == 'cluster' else (x / x.sum()) * 100)
+                .sort_values(by='count', ascending=False))) +
+    aes(x='cluster', y='count', fill='cluster') + 
+    geom_bar(stat='identity', position='dodge', alpha=0.8, color='black', size=0.2) +
+    labs(x='Clusters', y='Quantidade (%)', title='Quantidade de Consumidor por Cluster') +
+    theme_classic() +
+    theme(plot_title=element_text(size=14, face='bold', margin={'b': 10}),
+       axis_title=element_text(size=12),
+       legend_position='bottom',
+       legend_title=element_text(size=10, face='bold'),
+       panel_grid_major=element_blank(),
+       panel_grid_minor=element_blank(),
+       panel_border=element_blank(),
+       axis_line=element_line(color='black'),
+       axis_ticks=element_line(color='black'),
+       legend_background=element_blank(),
+       legend_key=element_blank(),
+       figure_size=(8, 6)) +
+ guides(fill=guide_legend(ncol=3, title=''))
+
+).draw(return_ggplot=True, show=True)
+
+
+```
